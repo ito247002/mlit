@@ -3,4 +3,9 @@
 *.log
 *xlsx
 
+# Folders to ignore
 submission/
+Data/
+L01-25_GML/
+image/
+__pycache__/

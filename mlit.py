@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import lightgbm as lgb
+import xgboost as xgb
 import torch
 import optuna
 from sklearn.model_selection import KFold
@@ -301,10 +302,66 @@ plt.tight_layout()
 plt.savefig('image/feature_importance.png')
 print("Saved image/feature_importance.png")
 
+# --- XGBoost Training ---
+print("Training XGBoost...")
+xgb_params = {
+    'objective': 'reg:squarederror',
+    'eval_metric': 'rmse',
+    'learning_rate': 0.05,
+    'max_depth': 6,
+    'subsample': 0.7,
+    'colsample_bytree': 0.7,
+    'seed': 42,
+    'tree_method': 'hist',
+    'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+}
+
+xgb_oof_preds_log = np.zeros(len(train_processed))
+xgb_test_preds_log = np.zeros(len(test_processed))
+xgb_models = []
+
+# Convert to DMatrix for XGBoost
+# Note: XGBoost handles NaNs, but ensure data types are correct
+for fold, (train_idx, val_idx) in enumerate(kf.split(X_selected, y_log)):
+    print(f"XGB Fold {fold+1}")
+    X_train, y_train = X_selected.iloc[train_idx], y_log.iloc[train_idx]
+    X_val, y_val = X_selected.iloc[val_idx], y_log.iloc[val_idx]
+    
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dval = xgb.DMatrix(X_val, label=y_val)
+    
+    model = xgb.train(
+        xgb_params,
+        dtrain,
+        num_boost_round=10000,
+        evals=[(dtrain, 'train'), (dval, 'eval')],
+        early_stopping_rounds=100,
+        verbose_eval=100
+    )
+    
+    xgb_models.append(model)
+    xgb_oof_preds_log[val_idx] = model.predict(dval)
+    
+    # Predict on test
+    dtest = xgb.DMatrix(X_test_selected)
+    xgb_test_preds_log += model.predict(dtest) / kf.get_n_splits()
+
+xgb_oof_preds = np.expm1(xgb_oof_preds_log)
+xgb_test_preds = np.expm1(xgb_test_preds_log)
+
+print(f"XGBoost CV MAPE: {mean_absolute_percentage_error(y, xgb_oof_preds)}")
+
+# --- Ensemble ---
+print("Ensembling...")
+ensemble_oof_preds = 0.5 * oof_preds + 0.5 * xgb_oof_preds
+ensemble_test_preds = 0.5 * test_preds + 0.5 * xgb_test_preds
+
+print(f"Ensemble CV MAPE: {mean_absolute_percentage_error(y, ensemble_oof_preds)}")
+
 # Create Submission
 submission_df = pd.DataFrame({
     'id': test_processed['id'],
-    'money_room': test_preds
+    'money_room': ensemble_test_preds
 })
 
 # Format ID: convert to int, then zero-pad to 6 digits
